@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 from multiprocessing import Pool,cpu_count
 import argparse,json
 from shapely.geometry import LineString,Polygon,MultiPolygon,Point
-from control import Seguimiento
+from control import Seguimiento,Imp
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -109,7 +110,7 @@ class AnalisisTopografico:
         rioPol = geo.GeoSeries(self.corrientesArea.segmentize(20),crs=f"EPSG:{self.CRS}")
         lineas=rioPol.buffer(10).boundary
         lineas.extend(rioPol.buffer(-10).boundary)
-        rioLin = geo.GeoDataFrame(geometry=lineas,crs=f"EPSG:{CRS}")
+        rioLin = geo.GeoDataFrame(geometry=lineas,crs=f"EPSG:{self.CRS}")
         voronoi = rioPol.voronoi_polygons().boundary
         clip = voronoi.clip(rioLin)
         voroLin = self.cortaLinea(voronoi)
@@ -149,24 +150,24 @@ class AnalisisTopografico:
 def inicio(_a):
     analizar = AnalisisTopografico(dict(gpkg="datos/curvas_nivel_10jun.gpkg",capas=["curva_nivel_l_vw","corrientesAguaLinea","corrientesAguaArea","cuerposAgua"],e=_a.e))
     analizar.control = Seguimiento("corrientesLinea")
-    print(f"[info] ENCONTRANDO LAS CURVAS DE NIVEL QUE LAS CORRIENTES INTERSECTAN EN ORDEN DE EDICION DE LA LINEA DE CORRIENTE DE AGUA")
+    imp(" ENCONTRANDO LAS CURVAS DE NIVEL QUE LAS CORRIENTES INTERSECTAN EN ORDEN DE EDICION DE LA LINEA DE CORRIENTE DE AGUA")
     analizar.control.inicia(len(analizar.corrientesLinea.count_geometries()))
     with Pool() as pool:
         res = pool.map(analizar.getCoordCurva,analizar.corrientesLinea.geometry)
     analizar.corrientesLinea["interCurvas"] = res
     analizar.guardaResult(analizar.corrientesLinea,"CorrientesInterCurvas",_a.e)
-    print(f"[info] Las curvas de nivel que intersecan con cada corriente de agua fueron encontradas satisfactoriamente")
-    print(f"[info] Revisando la logica de la edicion de las corrientes de agua... ")
+    imp(" Las curvas de nivel que intersecan con cada corriente de agua fueron encontradas satisfactoriamente")
+    imp(" Revisando la logica de la edicion de las corrientes de agua... ")
     validar = analizar.validaLogicaCorrienteAgua()
     analizar.guardaResult(analizar.corrientesLinea.iloc[validar],"Corrientes_a_Revisar",_a.e)
     
     ################################################################################
-    print(f"[info] Onbteniendo la linea central de las corrientes tipo área")
+    imp(" Onbteniendo la linea central de las corrientes tipo área")
     central = analizar.lineaCentral()
     analizar.guardaResult(central,"lineaCentralCorrientesArea",_a.e)
 
     ##################################################################################
-    print(f"[info] Buscando cuerpos de agua que intersectan con alguna curva de nivel")
+    imp(" Buscando cuerpos de agua que intersectan con alguna curva de nivel")
     for i,row in analizar.cuerposAgua.iterrows():
         if curvasC := geo.read_file(analizar.gpkg,layer=analizar.capas[0],mask=row.geometry):
             analizar.cuerposAgua.loc[i,"curvasInter"]= curvasC.index.to_list()
@@ -193,7 +194,7 @@ def inicio(_a):
     # plt.show()
     # capas = [dict(nom="curva_nivel_l_vw",valor=None),dict(nom="corrientesAguaLinea",valor=None),dict(nom="corrientesAguaArea",valor=None),dict(nom="cuerposAgua",valor=None)]
     # for i in range(0,len(capas)):
-    #     print(f"[info] Cargando capa {capas[i]['nom']}")
+    #     imp(f" Cargando capa {capas[i]['nom']}")
     #     capas[i]["valor"]=geo.read_file('datos/Aguascalientes.gpkg',layer=f"{capas[i]['nom']}_0{_a.e}")
     #     capas[i]["valor"].set_index("id",inplace=True)
         #capas[i]["valor"].to_crs(crs='EPSG:6372',inplace=True)
@@ -221,9 +222,10 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description="Inconsistencias de Corrientes de Agua con la curvas de nivel")
     parser.add_argument("--e",type=int, help="Clave geoestadistica de la entidad federativa.", default=None)
     args = parser.parse_args()
-    print(f"[{time.ctime()}] Iniciando Procedimiento")
+    imp = Imp()
+    imp.text("Iniciando Procedimiento")
     t1 = t()
-    print(f"Proceso Terminado con exito en un tiempo de {inicio(args)-t1}")
+    imp.text(f"Proceso Terminado con exito en un tiempo de {inicio(args)-t1}")
 
 
 

@@ -1,13 +1,13 @@
+import sys
 from time import time as t
-import time
 import os
 import geopandas as geo
 import matplotlib.pyplot as plt
 from multiprocessing import Pool,cpu_count
+from pyproj import CRS
 import argparse,json
 from shapely.geometry import LineString,Polygon,MultiPolygon,Point
-from control import Seguimiento,Imp
-
+from control import Seguimiento
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -17,20 +17,23 @@ class AnalisisTopografico:
     def __init__(self,dat):
         self.gpkg= dat["gpkg"]  
         self.capas = dat["capas"]   
-        self.oneCurva = geo.read_file(self.gpkg, layer=self.capas[0],rows=1)
-        self.CRS=self.oneCurva.crs.to_epsg()
+        self.CRS=CRS.from_epsg(6372)
         self.control=None
         self.corrientesLinea = geo.read_file(self.gpkg, layer=self.capas[1],mask=self.getPolEdo(dat["e"]))
-        self.corrientesLinea.to_crs(epsg=self.CRS,inplace=True)
-        self.corrientesLinea.set_index("id",inplace=True)
+        self.corrientesLinea.to_crs(crs=self.CRS,inplace=True)
+        self.corrientesLinea["indice"]=self.corrientesLinea.index
+        self.corrientesLinea.set_index("indice",inplace=True)
         self.corrientesLinea["interCurvas"]=None
 
+
         self.corrientesArea = geo.read_file(self.gpkg, layer=self.capas[2],mask=self.getPolEdo(dat["e"]))
-        self.corrientesArea.to_crs(epsg=self.CRS,inplace=True)
+        self.corrientesArea.to_crs(crs=self.CRS,inplace=True)
+        self.corrientesArea["interCurvas"]=None
         self.corrientesArea.set_index("id",inplace=True)
 
+
         self.cuerposAgua = geo.read_file(self.gpkg, layer=self.capas[3],mask=self.getPolEdo(dat["e"]))
-        self.cuerposAgua.to_crs(epsg=self.CRS,inplace=True)
+        self.cuerposAgua.to_crs(crs=self.CRS,inplace=True)
         self.cuerposAgua.set_index("id",inplace=True)
         self.cuerposAgua["interCurvas"]=None
 
@@ -63,7 +66,9 @@ class AnalisisTopografico:
                     mini=o["z"]
         return ids
 
-    
+
+
+
     def cortaLinea(self):
         segmentos = []
         for geom in self.corrientesLinea.geometry:
@@ -86,7 +91,8 @@ class AnalisisTopografico:
     def getCoordCurva(self,linea):
         cosmos = linea.envelope
         curvas = geo.read_file(self.gpkg,layer=self.capas[0],mask=cosmos)
-        curvas.to_crs(epsg=self.CRS,inplace=True)
+        curvas.to_crs(crs=self.CRS,inplace=True)
+        curvas.set_crs(crs=self.CRS,inplace=True,allow_override=True)
         intersecciones =  curvas.iloc[curvas.geometry.intersects(linea)]
         resultados = []
         inicio = Point(linea.coords[0])
@@ -102,15 +108,17 @@ class AnalisisTopografico:
                     if geom.geom_type == "Point":
                         resultados.append(dict(x=geom.x,y=geom.y,z=row["elevacion"],d=dist))
         resultados.sort(key=lambda item: item["d"])
-        self.control.actualizar(1)
+        self.control.actualizar(1) 
         del cosmos,curvas,intersecciones,inicio
         return resultados
 
     def lineaCentral(self):
-        rioPol = geo.GeoSeries(self.corrientesArea.segmentize(20),crs=f"EPSG:{self.CRS}")
-        lineas=rioPol.buffer(10).boundary
+        rioPol = geo.GeoDataFrame(geometry=self.corrientesArea.segmentize(20).geometry)
+        rioPol.to_crs(crs=self.CRS,inplace=True)
+        lineas=rioPol.buffer(10).boundary.to_list()
         lineas.extend(rioPol.buffer(-10).boundary)
-        rioLin = geo.GeoDataFrame(geometry=lineas,crs=f"EPSG:{self.CRS}")
+        rioLin = geo.GeoDataFrame(geometry=lineas)
+        rioLin.to_crs(crs=self.CRS,inplace=True)
         voronoi = rioPol.voronoi_polygons().boundary
         clip = voronoi.clip(rioLin)
         voroLin = self.cortaLinea(voronoi)
@@ -148,21 +156,34 @@ class AnalisisTopografico:
 
 
 def inicio(_a):
-    analizar = AnalisisTopografico(dict(gpkg="datos/curvas_nivel_10jun.gpkg",capas=["curva_nivel_l_vw","corrientesAguaLinea","corrientesAguaArea","cuerposAgua"],e=_a.e))
+    from conexion_db import engine
+    print("[info] Conectando a BD")
+    if conn := engine(*list(map(lambda p:os.getenv(p),['HOST','BD','USER','PASS','PORT']))):
+        print("[info] Obteniendo las curvas de nivel reproyectadas a EPSG:6372")
+        curvasNivel = geo.read_postgis("SELECT id, nom_obj, codigo, calif_pos, tipo, clase_geo, elevacion, ST_Transform(geometria,6372) as geom FROM cnal_topo50_prod.curva_nivel_l_vw",conn)
+        curvasNivel.to_file("datos/curvas_nivel_10jun.gpkg",layer="curvasNivel6372",overwrite=True,driver="GPKG")
+        del curvasNivel
+    analizar = AnalisisTopografico(dict(gpkg="datos/curvas_nivel_10jun.gpkg",capas=["curvasNivel6372","corrientesAguaLinea","corrientesAguaArea","cuerposAgua"],e=_a.e))
     analizar.control = Seguimiento("corrientesLinea")
+    imp = analizar.control.imp
+    imp(" Iniciando el analisis de las corrientes de agua con las curvas de nivel")
     imp(" ENCONTRANDO LAS CURVAS DE NIVEL QUE LAS CORRIENTES INTERSECTAN EN ORDEN DE EDICION DE LA LINEA DE CORRIENTE DE AGUA")
-    analizar.control.inicia(len(analizar.corrientesLinea.count_geometries()))
+    tot = len(analizar.corrientesLinea.count_geometries())
+    analizar.control.inicia(tot)
     with Pool() as pool:
-        res = pool.map(analizar.getCoordCurva,analizar.corrientesLinea.geometry)
+        res = pool.map(analizar.getCoordCurva,analizar.corrientesLinea.geometry) 
+    text = f"{analizar.control.fecha()}  " + "." * (tot//analizar.control.divisor) + "  100% \n"
+    sys.stdout.write(f"\033[{analizar.control.y};{analizar.control.x}H{text}")
+    sys.stdout.flush()
     analizar.corrientesLinea["interCurvas"] = res
     analizar.guardaResult(analizar.corrientesLinea,"CorrientesInterCurvas",_a.e)
     imp(" Las curvas de nivel que intersecan con cada corriente de agua fueron encontradas satisfactoriamente")
-    imp(" Revisando la logica de la edicion de las corrientes de agua... ")
+    imp(" Revisando la lógica de la edición de las corrientes de agua... ")
     validar = analizar.validaLogicaCorrienteAgua()
     analizar.guardaResult(analizar.corrientesLinea.iloc[validar],"Corrientes_a_Revisar",_a.e)
     
     ################################################################################
-    imp(" Onbteniendo la linea central de las corrientes tipo área")
+    imp("Obteniendo la línea central de las corrientes tipo área")
     central = analizar.lineaCentral()
     analizar.guardaResult(central,"lineaCentralCorrientesArea",_a.e)
 
@@ -171,20 +192,18 @@ def inicio(_a):
     for i,row in analizar.cuerposAgua.iterrows():
         if curvasC := geo.read_file(analizar.gpkg,layer=analizar.capas[0],mask=row.geometry):
             analizar.cuerposAgua.loc[i,"curvasInter"]= curvasC.index.to_list()
-    analizar.guardaResult(analizar.cuerpoAgua,"cuerposAguaIntersec",_a.e)
+    analizar.guardaResult(analizar.cuerposAgua,"cuerposAguaIntersec",_a.e)
     return t()
     
 
 
-    # from conexion_db import engine
-    # print("[info] Conectando a BD")
-    #   if conn := engine(*list(map(lambda p:os.getenv(p),['HOST','BD','USER','PASS','PORT']))):
         #   corrientes_linea = geo.read_postgis("SELECT id,nom_geo,condicion,fecha_mod,ST_Transform(geometria,6372) as geom FROM  cnal_topo50_prod.ctrl_mov_corriente_ag_l WHERE fecha_mod >'2026-03-30'",conn)   
         #   corrientes_linea.to_file("datos/curvas_nivel_10jun.gpkg",layer="corrientesAguaLinea",overwrite=True,driver="GPKG")
         #   corrientes_area = geo.read_postgis("SELECT id,nom_geo,condicion,fecha_mod,ST_Transform(geometria,6372) as geom FROM  cnal_topo50_prod.ctrl_mov_corriente_ag_a WHERE fecha_mod >'2026-03-30'",conn)   
         #   corrientes_area.to_file("datos/curvas_nivel_10jun.gpkg",layer="corrientesAguaArea",overwrite=True,driver="GPKG")
-        #   cuerpos = geo.read_postgis("SELECT id,nom_geo,condicion,fecha_mod,ST_Transform(geometria,6372) as geom FROM  cnal_topo50_prod.ctrl_mov_cuerpo_agua_a WHERE fecha_mod >'2026-03-30'",conn)   
+        #   cuerpos = geo.read_postgis("SELECT id,nom_geo,condicion,fecha_mod,ST_Transform(geometria,6372) as geom FROM  cnal_topo50_prod.ctrl_mov_cuerpo_agua_a,conn)   
         #   cuerpos.to_file("datos/curvas_nivel_10jun.gpkg",layer="cuerposAgua",overwrite=True,driver="GPKG")
+
         #   del cuerpos, corrientes_area, corrientes_linea
 
 
@@ -222,11 +241,9 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description="Inconsistencias de Corrientes de Agua con la curvas de nivel")
     parser.add_argument("--e",type=int, help="Clave geoestadistica de la entidad federativa.", default=None)
     args = parser.parse_args()
-    imp = Imp()
-    imp.text("Iniciando Procedimiento")
+    os.system("cls" if os.name == "nt" else "clear")
     t1 = t()
-    imp.text(f"Proceso Terminado con exito en un tiempo de {inicio(args)-t1}")
-
+    tiempo = inicio(args)-t1
 
 
 

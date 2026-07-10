@@ -54,17 +54,24 @@ class AnalisisTopografico:
 
 
     def validaLogicaCorrienteAgua(self):
-        ids=[]
+        idsIncons,idsInver=[],[]
         for i,row in self.corrientesLinea.iterrows():
             obj = row["interCurvas"]
-            mini = 0
+            elev = []
+            ban=True
             for o in obj:
-                if mini>o["z"]:
-                    ids.append(i)
+                if o["z"] in elev:
+                    idsIncons.append(i)
+                    ban=False
                     break
                 else:
-                    mini=o["z"]
-        return ids
+                    elev.append(o["z"])
+            if ban:
+                copia=elev.copy()
+                copia.sort(reverse=True)
+                if copia == elev:
+                    idsInver.append(i)
+        return idsIncons,idsInver
 
 
 
@@ -179,9 +186,10 @@ def inicio(_a):
     analizar.guardaResult(analizar.corrientesLinea,"CorrientesInterCurvas",_a.e)
     imp(" Las curvas de nivel que intersecan con cada corriente de agua fueron encontradas satisfactoriamente")
     imp(" Revisando la lógica de la edición de las corrientes de agua... ")
-    validar = analizar.validaLogicaCorrienteAgua()
+    validar,invertir = analizar.validaLogicaCorrienteAgua()
     analizar.guardaResult(analizar.corrientesLinea.iloc[validar],"Corrientes_a_Revisar",_a.e)
-    
+    analizar.guardaResult(analizar.corrientesLinea.iloc[invertir],"Corrientes_a_Invertir",_a.e)
+
     ################################################################################
     imp("Obteniendo la línea central de las corrientes tipo área")
     central = analizar.lineaCentral()

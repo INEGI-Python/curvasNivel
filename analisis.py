@@ -67,18 +67,19 @@ class AnalisisTopografico:
                 else:
                     elev.append(o["z"])
             if ban:
-                copia=elev.copy()
-                copia.sort(reverse=True)
-                if copia == elev:
-                    idsInver.append(i)
+                if len(elev)>1:
+                    copia=elev.copy()
+                    copia.sort(reverse=False)
+                    if copia == elev:
+                        idsInver.append(i)
         return idsIncons,idsInver
 
 
 
 
-    def cortaLinea(self):
+    def cortaLinea(self,lineas):
         segmentos = []
-        for geom in self.corrientesLinea.geometry:
+        for geom in lineas.geometry:
             if geom is None:
                 continue
             if geom.geom_type == 'LineString':
@@ -120,40 +121,31 @@ class AnalisisTopografico:
         return resultados
 
     def lineaCentral(self):
-        rioPol = geo.GeoDataFrame(geometry=self.corrientesArea.segmentize(20).geometry)
-        rioPol.to_crs(crs=self.CRS,inplace=True)
+        rioPol = self.corrientesArea.copy()
+        rioPol.loc[:,"geometry"] = rioPol.segmentize(20)
         lineas=rioPol.buffer(10).boundary.to_list()
         lineas.extend(rioPol.buffer(-10).boundary)
         rioLin = geo.GeoDataFrame(geometry=lineas)
+        rioLin.set_crs(crs=self.CRS,inplace=True,allow_override=True)
         rioLin.to_crs(crs=self.CRS,inplace=True)
         voronoi = rioPol.voronoi_polygons().boundary
-        clip = voronoi.clip(rioLin)
-        voroLin = self.cortaLinea(voronoi)
+        voroDF = geo.GeoDataFrame(geometry=voronoi)
+        clip = voroDF.clip(rioLin)
+        voroLin = self.cortaLinea(clip)
         central = voroLin.iloc[~voroLin.geometry.intersects(rioLin.union_all())]
         return central            
 
 
-# def areas2lineas(cca):
-#     global CRS
-#     _poli = cca.exterior
-#     voronoi = _poli.voronoi_polygons()
-#     voro_linea = geo.GeoDataFrame(geometry=voronoi.boundary)
-#     tmp = cortaLinea(voro_linea.geometry)
-#     tmp.set_crs(epsg=CRS,inplace=True)
-#     tmp.sindex
-#     tmp.is_empty
-#     voro_lin2=tmp.clip(cca)
-#     contiene=[]
-#     for p in cca.buffer(-5).boundary:
-#         contiene.extend(voro_lin2.iloc[voro_lin2.geometry.intersects(p)].index)
-#     voro_lin2.drop(index=contiene,inplace=True)
-#     tmp.build_area()
-#     return geo.GeoDataFrame(geometry=voro_lin2.simplify(10))
+    def interCuerpos(self):
+        cC = self.cuerposAgua.copy()
+        ids = []
+        for geom in cC.geometry:
+            curvasC = geo.read_file(self.gpkg,layer=self.capas[0],columns=["id"],mask=geom)
+            ids.append(curvasC.id.to_list())
+        cC["curvasInter"] = ids
+        return cC[cC["curvasInter"].map(len) > 0]
 
                             
-
-
-
     def guardaResult(self,gdf,nom,edo):
         if not os.path.exists("Salida"):
             os.makedirs("Salida")
@@ -163,13 +155,13 @@ class AnalisisTopografico:
 
 
 def inicio(_a):
-    from conexion_db import engine
-    print("[info] Conectando a BD")
-    if conn := engine(*list(map(lambda p:os.getenv(p),['HOST','BD','USER','PASS','PORT']))):
-        print("[info] Obteniendo las curvas de nivel reproyectadas a EPSG:6372")
-        curvasNivel = geo.read_postgis("SELECT id, nom_obj, codigo, calif_pos, tipo, clase_geo, elevacion, ST_Transform(geometria,6372) as geom FROM cnal_topo50_prod.curva_nivel_l_vw",conn)
-        curvasNivel.to_file("datos/curvas_nivel_10jun.gpkg",layer="curvasNivel6372",overwrite=True,driver="GPKG")
-        del curvasNivel
+    # from conexion_db import engine
+    # print("[info] Conectando a BD")
+    # if conn := engine(*list(map(lambda p:os.getenv(p),['HOST','BD','USER','PASS','PORT']))):
+    #     print("[info] Obteniendo las curvas de nivel reproyectadas a EPSG:6372")
+    #     curvasNivel = geo.read_postgis("SELECT id, nom_obj, codigo, calif_pos, tipo, clase_geo, elevacion, ST_Transform(geometria,6372) as geom FROM cnal_topo50_prod.curva_nivel_l_vw",conn)
+    #     curvasNivel.to_file("datos/curvas_nivel_10jun.gpkg",layer="curvasNivel6372",overwrite=True,driver="GPKG")
+    #     del curvasNivel
     analizar = AnalisisTopografico(dict(gpkg="datos/curvas_nivel_10jun.gpkg",capas=["curvasNivel6372","corrientesAguaLinea","corrientesAguaArea","cuerposAgua"],e=_a.e))
     analizar.control = Seguimiento("corrientesLinea")
     imp = analizar.control.imp
@@ -197,10 +189,8 @@ def inicio(_a):
 
     ##################################################################################
     imp(" Buscando cuerpos de agua que intersectan con alguna curva de nivel")
-    for i,row in analizar.cuerposAgua.iterrows():
-        if curvasC := geo.read_file(analizar.gpkg,layer=analizar.capas[0],mask=row.geometry):
-            analizar.cuerposAgua.loc[i,"curvasInter"]= curvasC.index.to_list()
-    analizar.guardaResult(analizar.cuerposAgua,"cuerposAguaIntersec",_a.e)
+    iC=analizar.interCuerpos()
+    analizar.guardaResult(iC,"CuerposAguaInterCurvas",_a.e)
     return t()
     
 
@@ -225,7 +215,7 @@ def inicio(_a):
     #     capas[i]["valor"]=geo.read_file('datos/Aguascalientes.gpkg',layer=f"{capas[i]['nom']}_0{_a.e}")
     #     capas[i]["valor"].set_index("id",inplace=True)
         #capas[i]["valor"].to_crs(crs='EPSG:6372',inplace=True)
-        #capas[i]["valor"].set_crs(crs='EPSG:6372',inplace=True,allow_override=True)
+        #capalllllllllls[i]["valor"].set_crs(crs='EPSG:6372',inplace=True,allow_override=True)
         #capas[i]["valor"].to_file("datos/Aguascalientes.gpkg",layer=f"{capas[i]['nom']}_01",overwrite=True,driver="GPKG")
 
     # for i,d in aguaLinea.iterrows():
@@ -236,8 +226,7 @@ def inicio(_a):
     # print(aguaLinea)
 
 
-    #intersecGDF.plot()
-    #plt.title("curvas_interseccionadas")
+    #intersecGDF.plot()   #plt.title("curvas_interseccionadas")
     #plt.show()
 
 

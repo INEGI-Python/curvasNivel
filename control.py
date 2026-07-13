@@ -26,7 +26,7 @@ class Seguimiento:
             obj["porcentaje"]= round((obj["procesados"]/obj["total"])*100,2)
             if obj["procesados"] % self.divisor == 0:
                 #os.system("cls" if os.name == "nt" else "clear")
-                text = f"{self.fecha()}  " + "." * (obj["procesados"]//self.divisor) + " " * ((obj["total"] - obj["procesados"])//self.divisor) + f"{obj["porcentaje"]}%\n"
+                text = f"{self.fecha()}  " + "█" * (obj["procesados"]//self.divisor) + " " * ((obj["total"] - obj["procesados"])//self.divisor) + f"{obj["porcentaje"]}%\n"
                 sys.stdout.write(f"\033[{self.y};{self.x}H{text}")
                 sys.stdout.flush()
             tmp.seek(0)
